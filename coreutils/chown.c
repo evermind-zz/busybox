@@ -43,6 +43,8 @@
 //usage:     "\n	-v	Verbose"
 //usage:     "\n	-f	Hide errors"
 //usage:	)
+//usage:     "\n	-F	read from file or with -F - from stdin"
+//usage:     "\n		with content eg.: chwon 0:0 /path/to/file"
 //usage:
 //usage:#define chown_example_usage
 //usage:       "$ ls -l /tmp/foo\n"
@@ -55,6 +57,7 @@
 //usage:       "-r--r--r--    1 root     root            0 Apr 12 18:25 /tmp/foo\n"
 
 #include "libbb.h"
+#include "str_to_argc_argv.h"
 
 /* This is a NOEXEC applet. Be very careful! */
 
@@ -125,8 +128,13 @@ static int FAST_FUNC fileAction(struct recursive_state *state UNUSED_PARAM,
 #undef param
 }
 
-int chown_main(int argc UNUSED_PARAM, char **argv)
+int chown_main_original(int argc UNUSED_PARAM, char **argv)
 {
+#if MOD_DEBUG
+	for (int i = 0; i < argc; i++) {
+		printf("chown_main_original()[%ld] i[%d] word %s\n", argc, i, argv[i]);
+	}
+#endif /* MOD_DEBUG */
 	int retval = EXIT_SUCCESS;
 	int opt, flags;
 	struct param_t param;
@@ -167,6 +175,81 @@ int chown_main(int argc UNUSED_PARAM, char **argv)
 		) {
 			retval = EXIT_FAILURE;
 		}
+	}
+
+	return retval;
+}
+
+#define MAX_ARGS 256
+#define LINE_BUFFER_MAX_LEN 2048
+#define ARGV_BUFFER_LENGTH (LINE_BUFFER_MAX_LEN + 1)
+int chown_main(int argc UNUSED_PARAM, char **argv)
+{
+#if MOD_DEBUG
+	for (int i = 0; i < argc; i++) {
+		printf("chwon_main()[%ld] i[%d] word %s\n", argc, i, argv[i]);
+	}
+#endif /* MOD_DEBUG */
+	int retval = EXIT_SUCCESS;
+
+	if (argc == 3 && strcmp("-F", argv[1]) == 0) { // read from single file
+		// basically this section here is dedicated to read a script
+		// file with loads of calls to chown eg. like:
+		//
+		// chown 0:0 /path/to/file
+		//
+		// If chown would be called from within the script that would spawn
+		// a new process everytime and consumes a lot of time. Hence we read
+		// read such a script file as regular file or from stdin and feed it
+		// internally.
+
+		FILE* fp;
+		fp = xfopen_stdin(argv[2]);
+		if (fp == NULL) {
+			perror("Failed: ");
+			return EXIT_FAILURE;
+		}
+
+		// args buffer
+		char new_argvbuffer[ARGV_BUFFER_LENGTH];
+		int new_argc;              //return value
+		char *new_argv[MAX_ARGS];  //return value
+
+		// linebuffer
+		char line_buffer[LINE_BUFFER_MAX_LEN];
+		while (fgets(line_buffer, LINE_BUFFER_MAX_LEN, fp)) {
+			if (*line_buffer == '#') { // skip lines beginning with # aka comment
+				continue;
+			}
+
+			int newline_pos = strchr(line_buffer, '\n') - line_buffer;
+			int no_of_bytes_before_newline = strcspn(line_buffer, "\n");
+			if (newline_pos != no_of_bytes_before_newline && !feof(fp) != 0) {
+				// line_buffer is to small -> increase LINE_BUFFER_MAX_LEN
+				fprintf(stderr, "[error] the buffer is too small\n");
+				return EXIT_FAILURE;
+			}
+
+			line_buffer[no_of_bytes_before_newline] = 0; // Remove trailing newline
+			memset(new_argvbuffer, 0, ARGV_BUFFER_LENGTH);
+
+			str_to_argc_argv(line_buffer, new_argvbuffer, &new_argc, new_argv, MAX_ARGS);
+
+#if MOD_DEBUG
+			for (int i = 0; i < argc; i++) {
+				printf("chown_main() new commandline [%ld] i[%d] word %s\n", new_argc, i, new_argv[i]);
+			}
+#endif /* MOD_DEBUG */
+			retval = chown_main_original(new_argc, new_argv);
+
+			if (retval != EXIT_SUCCESS) {
+				break;
+			}
+		}
+
+		fclose_if_not_stdin(fp);
+	} else {
+		retval = chown_main_original(argc, argv);
 	}
 
 	return retval;
